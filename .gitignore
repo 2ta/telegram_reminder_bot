@@ -23,19 +23,39 @@ wheels/
 # Virtual Environment
 venv/
 ENV/
+env/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+.DS_Store
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Local configuration
+config.py
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Distribution
+*.tar.gz
+*.zip
 
 # Project specific
 data/
-logs/
 config.py
 .env
 
 # OS
-.DS_Store
 Thumbs.db 
