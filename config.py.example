@@ -1,0 +1,44 @@
+import os
+from pathlib import Path
+
+# Base directory
+BASE_DIR = Path(__file__).parent.absolute()
+
+# Telegram Bot Token
+TELEGRAM_BOT_TOKEN = "your_telegram_bot_token_here"
+
+# Hugging Face Token
+HUGGINGFACE_TOKEN = "your_huggingface_token_here"
+
+# Database settings
+DATABASE_PATH = BASE_DIR / "data" / "reminders.db"
+
+# Logging settings
+LOG_PATH = BASE_DIR / "logs"
+LOG_FILE = LOG_PATH / "reminder_bot.log"
+
+# Create necessary directories
+os.makedirs(BASE_DIR / "data", exist_ok=True)
+os.makedirs(LOG_PATH, exist_ok=True)
+
+# Button texts in Persian
+BUTTON_TEXTS = {
+    "confirm": "✅ تأیید یادآور",
+    "reject": "❌ رد یادآور",
+    "daily": "📅 روزانه",
+    "weekly": "📅 هفتگی",
+    "monthly": "📅 ماهانه",
+    "once": "📅 یکبار",
+    "list_reminders": "📋 لیست یادآورها",
+    "delete": "🗑️ حذف",
+    "edit": "✏️ ویرایش",
+    "help": "❓ راهنما"
+}
+
+# Reminder frequencies
+FREQUENCIES = {
+    "daily": "هر روز",
+    "weekly": "هر هفته",
+    "monthly": "هر ماه",
+    "once": "یکبار"
+} 

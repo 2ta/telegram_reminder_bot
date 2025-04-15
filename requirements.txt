@@ -1,0 +1,7 @@
+python-telegram-bot==22.0
+pytz==2025.2
+schedule==1.2.2
+openai-whisper==20240930
+persian-tools==0.0.11
+jdatetime==5.2.0
+python-dotenv==1.0.1 
