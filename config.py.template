@@ -1,0 +1,59 @@
+import os
+from pathlib import Path
+
+# Base directory
+BASE_DIR = Path(__file__).parent.absolute()
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+
+# Hugging Face Configuration
+HUGGING_FACE_TOKEN = "YOUR_HUGGING_FACE_TOKEN"
+
+# Database Configuration
+DATABASE_PATH = "/var/lib/reminder-bot/reminders.db"
+
+# Logging Configuration
+LOG_FILE = "/var/log/reminder-bot/reminder-bot.log"
+LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+# Timezone Configuration
+DEFAULT_TIMEZONE = "Asia/Tehran"  # Default timezone for reminders
+
+# Bot Settings
+MAX_REMINDERS_PER_USER = 10  # Maximum number of active reminders per user
+REMINDER_CHECK_INTERVAL = 60  # Check for due reminders every X seconds
+
+# Voice Message Settings
+MAX_VOICE_DURATION = 300  # Maximum voice message duration in seconds
+VOICE_FORMATS = ["ogg", "mp3", "wav"]  # Supported voice formats
+
+# Notification Settings
+NOTIFICATION_RETRY_COUNT = 3  # Number of times to retry failed notifications
+NOTIFICATION_RETRY_DELAY = 60  # Delay between retries in seconds
+
+# Create necessary directories
+os.makedirs(BASE_DIR / "data", exist_ok=True)
+os.makedirs(BASE_DIR / "logs", exist_ok=True)
+
+# Button texts in Persian
+BUTTON_TEXTS = {
+    "confirm": "✅ تأیید یادآور",
+    "reject": "❌ رد یادآور",
+    "daily": "📅 روزانه",
+    "weekly": "📅 هفتگی",
+    "monthly": "📅 ماهانه",
+    "once": "📅 یکبار",
+    "list_reminders": "📋 لیست یادآورها",
+    "delete": "🗑️ حذف",
+    "edit": "✏️ ویرایش",
+    "help": "❓ راهنما"
+}
+
+# Reminder frequencies
+FREQUENCIES = {
+    "daily": "هر روز",
+    "weekly": "هر هفته",
+    "monthly": "هر ماه",
+    "once": "یکبار"
+} 

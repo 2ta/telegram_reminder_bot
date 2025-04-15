@@ -1,28 +1,51 @@
 # Telegram Reminder Bot
 
-A Persian-language Telegram bot for setting reminders with natural language processing.
+A Telegram bot that helps you set reminders using voice or text messages. The bot supports Persian language and can understand natural language input.
 
 ## Features
 
-- Set reminders using natural Persian language
-- Support for recurring reminders (daily, weekly, monthly)
-- Voice message support (converts voice to text)
-- Persian calendar support
-- Interactive buttons for confirmation and management
-- Persistent storage using SQLite
+- Set reminders using voice or text messages
+- Natural language processing in Persian
+- Support for date and time expressions
+- Multiple reminder management
+- Timezone support
 
 ## Installation
 
-1. Clone the repository:
+### Automated Installation
+
+1. Download the deployment script:
 ```bash
-git clone https://github.com/yourusername/reminder-bot-telegram.git
-cd reminder-bot-telegram
+wget https://raw.githubusercontent.com/2ta/telegram_reminder_bot/main/deploy.sh
 ```
 
-2. Create and activate a virtual environment:
+2. Make the script executable:
+```bash
+chmod +x deploy.sh
+```
+
+3. Run the script as root:
+```bash
+sudo ./deploy.sh
+```
+
+4. After installation, you need to:
+   - Copy `config.py.template` to `config.py`
+   - Edit `config.py` and add your Telegram bot token and Hugging Face token
+   - Start the service: `sudo systemctl start reminder-bot`
+
+### Manual Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/2ta/telegram_reminder_bot.git
+cd telegram_reminder_bot
+```
+
+2. Create a virtual environment:
 ```bash
 python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 ```
 
 3. Install dependencies:
@@ -30,11 +53,16 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. Configure the bot:
-- Copy `config.py.example` to `config.py`
-- Update the tokens and settings in `config.py`
+4. Copy the config template:
+```bash
+cp config.py.template config.py
+```
 
-5. Run the bot:
+5. Edit `config.py` and add your tokens:
+   - Get a Telegram bot token from [@BotFather](https://t.me/BotFather)
+   - Get a Hugging Face token from [huggingface.co](https://huggingface.co)
+
+6. Run the bot:
 ```bash
 python reminder_bot.py
 ```
@@ -42,35 +70,32 @@ python reminder_bot.py
 ## Usage
 
 1. Start a chat with your bot on Telegram
-2. Send a reminder message in Persian, for example:
-   - "یادآوری کن فردا ساعت ۳ بعد از ظهر به مادرم زنگ بزنم"
-   - "یادآوری کن ۲۶ فروردین ۱۴۰۴ ساعت ۲ بعد از ظهر جلسه دارم"
+2. Send a voice message or text with your reminder
+3. The bot will process your message and set the reminder
+4. You'll receive a notification when the reminder is due
 
-3. Use the interactive buttons to:
-   - Confirm or reject reminders
-   - Set reminder frequency
-   - List all reminders
-   - Delete reminders
+### Examples
 
-## Project Structure
+Text messages:
+- "به من یادآوری کن که ساعت ۲ بعد از ظهر به مادرم زنگ بزنم"
+- "فردا ساعت ۱۰ صبح جلسه دارم"
+- "پس‌فردا ساعت ۳ عصر با دوستم قرار ملاقات دارم"
 
-```
-reminder-bot-telegram/
-├── config.py           # Configuration settings
-├── reminder_bot.py     # Main bot code
-├── requirements.txt    # Python dependencies
-├── data/              # Database and data files
-├── logs/              # Log files
-└── README.md          # Documentation
-```
+Voice messages:
+- Say any of the above examples in Persian
 
-## Contributing
+## Configuration
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+The bot can be configured by editing the `config.py` file:
+
+- `TELEGRAM_BOT_TOKEN`: Your Telegram bot token
+- `HUGGING_FACE_TOKEN`: Your Hugging Face token
+- `DATABASE_PATH`: Path to the SQLite database
+- `LOG_FILE`: Path to the log file
+- `LOG_LEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- `DEFAULT_TIMEZONE`: Default timezone for reminders
+- `MAX_REMINDERS_PER_USER`: Maximum number of active reminders per user
+- `REMINDER_CHECK_INTERVAL`: How often to check for due reminders (in seconds)
 
 ## License
 
