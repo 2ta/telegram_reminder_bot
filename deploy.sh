@@ -3,72 +3,71 @@
 # Exit on error
 set -e
 
-echo "Starting deployment of Telegram Reminder Bot..."
+echo "Starting deployment..."
 
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then 
-    echo "Please run as root"
-    exit 1
-fi
-
-# Install dependencies
+# Install system dependencies
 echo "Installing system dependencies..."
 apt-get update
-apt-get install -y python3 python3-pip python3-venv git
+apt-get install -y \
+    ffmpeg \
+    python3-pip \
+    python3-venv \
+    build-essential \
+    python3-dev \
+    portaudio19-dev
 
-# Create installation directory
-INSTALL_DIR="/opt/reminder-bot"
-echo "Creating installation directory at $INSTALL_DIR..."
-mkdir -p $INSTALL_DIR
+# Create necessary directories
+mkdir -p data logs
 
-# Clone repository
-echo "Cloning repository..."
-git clone https://github.com/2ta/telegram_reminder_bot.git $INSTALL_DIR
+# Create virtual environment if it doesn't exist
+if [ ! -d "venv" ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv venv
+fi
 
-# Create virtual environment
-echo "Creating virtual environment..."
-python3 -m venv $INSTALL_DIR/venv
-
-# Install Python dependencies
+# Activate virtual environment and install dependencies
 echo "Installing Python dependencies..."
-$INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements.txt
+source venv/bin/activate
 
-# Create systemd service
-echo "Creating systemd service..."
-cat > /etc/systemd/system/reminder-bot.service << EOF
-[Unit]
-Description=Telegram Reminder Bot
-After=network.target
+# Upgrade pip
+pip install --upgrade pip
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=$INSTALL_DIR
-Environment="PATH=$INSTALL_DIR/venv/bin"
-ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/reminder_bot.py
-Restart=always
-RestartSec=10
+# Install dependencies
+pip install -r requirements.txt
 
-[Install]
-WantedBy=multi-user.target
-EOF
+# Install faster-whisper explicitly
+pip install faster-whisper
 
-# Reload systemd
-echo "Reloading systemd..."
-systemctl daemon-reload
+# Ensure .env file exists
+if [ ! -f ".env" ]; then
+    echo "Creating .env file..."
+    cp .env.example .env
+    echo "Please update .env with your Telegram bot token and other settings"
+fi
 
-# Set permissions
-echo "Setting permissions..."
-chown -R root:root $INSTALL_DIR
-chmod -R 755 $INSTALL_DIR
+# Set proper permissions
+chmod 600 .env
+chmod 755 data logs
 
-echo "Installation complete!"
-echo "Please complete the following steps:"
-echo "1. Copy config.py.template to config.py:"
-echo "   cp $INSTALL_DIR/config.py.template $INSTALL_DIR/config.py"
-echo "2. Edit config.py and add your tokens"
-echo "3. Start the service:"
-echo "   systemctl start reminder-bot"
-echo "4. Enable the service to start on boot:"
-echo "   systemctl enable reminder-bot"
-echo "5. Check status: sudo systemctl status reminder-bot" 
+# Create database if it doesn't exist
+if [ ! -f "data/reminders.db" ]; then
+    echo "Creating database..."
+    touch data/reminders.db
+    chmod 644 data/reminders.db
+fi
+
+# Create log file if it doesn't exist
+if [ ! -f "logs/reminder_bot.log" ]; then
+    echo "Creating log file..."
+    touch logs/reminder_bot.log
+    chmod 644 logs/reminder_bot.log
+fi
+
+# Restart the bot service if it exists
+if systemctl is-active --quiet reminder-bot; then
+    echo "Restarting reminder-bot service..."
+    systemctl restart reminder-bot
+fi
+
+echo "Deployment complete!"
+echo "Make sure to check the logs at logs/reminder_bot.log for any issues." 

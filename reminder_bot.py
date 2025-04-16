@@ -3,6 +3,9 @@ import logging
 import datetime
 import re
 from typing import Dict, List, Optional, Tuple, Union
+import json
+import requests
+import tempfile
 
 import pytz
 import schedule
@@ -11,11 +14,17 @@ import threading
 import sqlite3
 from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackContext, CallbackQueryHandler
-import whisper  # For voice processing
 import pkg_resources
 from persian_tools import digits  # For handling Persian numbers
 import jdatetime  # For Persian calendar conversion
 from config import *  # Import all config settings
+from dotenv import load_dotenv
+from faster_whisper import WhisperModel
+import asyncio
+import shutil
+
+# Load environment variables
+load_dotenv()
 
 # Setup logging
 logging.basicConfig(
@@ -28,14 +37,103 @@ logger = logging.getLogger(__name__)
 # Persian timezone
 TEHRAN_TZ = pytz.timezone('Asia/Tehran')
 
-# Voice recognition model
-model = whisper.load_model("base")
+class ReminderParser:
+    def __init__(self):
+        self.time_pattern = r'ساعت\s+(\d{1,2})(?::(\d{2}))?\s*(بعد از ظهر|صبح|عصر|شب)?'
+        self.date_pattern = r'(فردا|پس‌فردا|امروز|(\d{1,2})\s+(فروردین|اردیبهشت|خرداد|تیر|مرداد|شهریور|مهر|آبان|آذر|دی|بهمن|اسفند)\s+(\d{4}))'
+        
+    def extract_reminder_details(self, text: str) -> Dict:
+        """Extract reminder details using regex patterns."""
+        try:
+            time_match = re.search(self.time_pattern, text)
+            date_match = re.search(self.date_pattern, text)
+            
+            result = {
+                "time_info": None,
+                "date_info": None,
+                "task": text
+            }
+            
+            if time_match:
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2)) if time_match.group(2) else 0
+                period = time_match.group(3)
+                
+                # Convert to 24-hour format
+                if period in ['بعد از ظهر', 'عصر', 'شب'] and hour < 12:
+                    hour += 12
+                elif period == 'صبح' and hour == 12:
+                    hour = 0
+                    
+                result["time_info"] = {"hour": hour, "minute": minute}
+            
+            if date_match:
+                if date_match.group(1) == 'فردا':
+                    date = datetime.datetime.now(TEHRAN_TZ) + datetime.timedelta(days=1)
+                elif date_match.group(1) == 'پس‌فردا':
+                    date = datetime.datetime.now(TEHRAN_TZ) + datetime.timedelta(days=2)
+                elif date_match.group(1) == 'امروز':
+                    date = datetime.datetime.now(TEHRAN_TZ)
+                else:
+                    # Parse Persian date
+                    day = int(date_match.group(2))
+                    month = self._get_month_number(date_match.group(3))
+                    year = int(date_match.group(4))
+                    date = datetime.datetime(year, month, day, tzinfo=TEHRAN_TZ)
+                    
+                result["date_info"] = date
+            
+            # Extract task by removing time and date parts
+            task = text
+            if time_match:
+                task = task.replace(time_match.group(0), '')
+            if date_match:
+                task = task.replace(date_match.group(0), '')
+            task = task.replace('یادآوری کن', '').replace('یادم بنداز', '').replace('که', '').strip()
+            result["task"] = task
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error parsing reminder: {e}")
+            return None
+            
+    def _get_month_number(self, month_name: str) -> int:
+        """Convert Persian month name to number."""
+        months = {
+            'فروردین': 1, 'اردیبهشت': 2, 'خرداد': 3,
+            'تیر': 4, 'مرداد': 5, 'شهریور': 6,
+            'مهر': 7, 'آبان': 8, 'آذر': 9,
+            'دی': 10, 'بهمن': 11, 'اسفند': 12
+        }
+        return months.get(month_name, 1)
 
 class ReminderBot:
     def __init__(self):
-        """Initialize the bot with Telegram token and database setup."""
+        # Initialize bot configuration
+        self.token = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.model_size = os.getenv('WHISPER_MODEL_SIZE', 'tiny')
+        self.compute_type = os.getenv('WHISPER_COMPUTE_TYPE', 'int8')
+        self.cpu_threads = int(os.getenv('WHISPER_CPU_THREADS', '1'))
+        self.max_concurrent = int(os.getenv('MAX_CONCURRENT_TRANSCRIPTIONS', '1'))
+        self.cleanup_interval = int(os.getenv('CLEANUP_INTERVAL', '300'))
+        
+        # Initialize voice recognition model
+        self.model = WhisperModel(
+            self.model_size,
+            device="cpu",
+            compute_type=self.compute_type,
+            cpu_threads=self.cpu_threads
+        )
+        
+        # Create temp directory for voice files
+        self.temp_dir = tempfile.mkdtemp()
+        self.processing_count = 0
+        self.last_cleanup = time.time()
+        
+        # Initialize database
         self.db_conn = self._setup_database()
-        self.application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        self.parser = ReminderParser()
         self._setup_handlers()
         
         # Start the scheduler in a separate thread
@@ -62,6 +160,7 @@ class ReminderBot:
 
     def _setup_handlers(self) -> None:
         """Set up Telegram message handlers."""
+        self.application = Application.builder().token(self.token).build()
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("list", self.list_reminders))
@@ -107,31 +206,59 @@ class ReminderBot:
         await update.message.reply_text(help_text)
 
     async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Process voice messages and extract reminder details."""
-        voice_file = await update.message.voice.get_file()
-        
-        # Download the voice message
-        voice_path = f"voice_{update.message.from_user.id}_{int(time.time())}.ogg"
-        await voice_file.download_to_drive(voice_path)
-        
+        """Handle voice messages with memory management."""
+        if self.processing_count >= self.max_concurrent:
+            await update.message.reply_text(
+                "سیستم در حال حاضر مشغول است. لطفاً چند لحظه دیگر تلاش کنید."
+            )
+            return
+
         try:
-            # Transcribe with Whisper
-            result = model.transcribe(voice_path)
-            text = result["text"]
+            self.processing_count += 1
+            voice = update.message.voice
+            voice_file = await context.bot.get_file(voice.file_id)
+            
+            # Save to temp file with OGG extension
+            ogg_path = os.path.join(self.temp_dir, f"{voice.file_id}.ogg")
+            wav_path = os.path.join(self.temp_dir, f"{voice.file_id}.wav")
+            
+            # Download the voice file
+            await voice_file.download_to_drive(ogg_path)
+            
+            # Convert OGG to WAV using ffmpeg
+            os.system(f"ffmpeg -i {ogg_path} -ar 16000 -ac 1 -c:a pcm_s16le {wav_path}")
+            
+            # Transcribe with optimized parameters
+            segments, info = self.model.transcribe(
+                wav_path,
+                language="fa",
+                beam_size=1,
+                vad_filter=True
+            )
+            
+            text = " ".join([segment.text for segment in segments])
+            
+            # Clean up the files immediately after use
+            try:
+                os.remove(ogg_path)
+                os.remove(wav_path)
+            except Exception as e:
+                logger.error(f"Error cleaning up voice files: {e}")
             
             # Process the transcribed text
-            await update.message.reply_text(f"متن تشخیص داده شده:\n{text}")
             await self._process_reminder_text(text, update, context)
+            
+            # Send confirmation of transcription
+            await update.message.reply_text(f"متن تشخیص داده شده:\n{text}")
             
         except Exception as e:
             logger.error(f"Error processing voice message: {e}")
             await update.message.reply_text(
-                "متأسفانه در پردازش پیام صوتی شما مشکلی پیش آمد. لطفاً متن یادآور را تایپ کنید."
+                "متأسفانه در پردازش پیام صوتی مشکلی پیش آمد. لطفاً دوباره تلاش کنید."
             )
         finally:
-            # Clean up the downloaded file
-            if os.path.exists(voice_path):
-                os.remove(voice_path)
+            self.processing_count -= 1
+            await self.cleanup_old_files()
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Process text messages and extract reminder details."""
@@ -143,20 +270,62 @@ class ReminderBot:
         query = update.callback_query
         await query.answer()
         
-        if query.data == "list_reminders":
-            await self.list_reminders(update, context)
-        elif query.data == "help":
-            await self.help_command(update, context)
-        elif query.data.startswith("confirm_"):
-            reminder_id = int(query.data.split("_")[1])
-            await self._confirm_reminder(update, context, reminder_id)
-        elif query.data.startswith("reject_"):
-            reminder_id = int(query.data.split("_")[1])
-            await self._reject_reminder(update, context, reminder_id)
-        elif query.data.startswith("frequency_"):
-            reminder_id = int(query.data.split("_")[1])
-            frequency = query.data.split("_")[2]
-            await self._set_frequency(update, context, reminder_id, frequency)
+        try:
+            if query.data == "list_reminders":
+                # Get user ID from callback query
+                user_id = query.from_user.id
+                cursor = self.db_conn.cursor()
+                cursor.execute(
+                    "SELECT id, text, next_run, frequency FROM reminders WHERE user_id = ? ORDER BY next_run",
+                    (user_id,)
+                )
+                reminders = cursor.fetchall()
+                
+                if not reminders:
+                    await query.message.reply_text("شما هیچ یادآوری تنظیم نکرده‌اید.")
+                    return
+                
+                response = "📅 یادآورهای شما:\n\n"
+                for idx, (r_id, text, next_run, frequency) in enumerate(reminders, 1):
+                    dt = datetime.datetime.fromisoformat(next_run)
+                    response += f"{idx}. {text} - {self._persian_format_datetime(dt)}"
+                    if frequency != "once":
+                        response += f" ({self._format_frequency_persian(frequency)})"
+                    response += "\n"
+                    
+                await query.message.reply_text(response)
+                
+            elif query.data == "help":
+                help_text = (
+                    "راهنمای استفاده از ربات یادآور:\n\n"
+                    "• برای تنظیم یادآور به صورت طبیعی بنویسید:\n"
+                    "  'یادآوری کن که فردا ساعت ۳ به مادرم زنگ بزنم'\n"
+                    "  'برای جلسه دندانپزشکی ۵ خرداد ساعت ۱۰ یادآوری کن'\n\n"
+                    "• مشاهده یادآورها:\n"
+                    "  دستور /list\n\n"
+                    "• حذف یادآور:\n"
+                    "  دستور /delete شماره_یادآور\n"
+                    "  مثال: /delete 2\n\n"
+                    "• همچنین می‌توانید پیام صوتی بفرستید و من آن را به یادآور تبدیل می‌کنم."
+                )
+                await query.message.reply_text(help_text)
+                
+            elif query.data.startswith("confirm_"):
+                reminder_id = int(query.data.split("_")[1])
+                await self._confirm_reminder(update, context, reminder_id)
+                
+            elif query.data.startswith("reject_"):
+                reminder_id = int(query.data.split("_")[1])
+                await self._reject_reminder(update, context, reminder_id)
+                
+            elif query.data.startswith("frequency_"):
+                reminder_id = int(query.data.split("_")[1])
+                frequency = query.data.split("_")[2]
+                await self._set_frequency(update, context, reminder_id, frequency)
+                
+        except Exception as e:
+            logger.error(f"Error handling callback: {e}")
+            await query.message.reply_text("متأسفانه در پردازش درخواست شما مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
 
     async def _confirm_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE, reminder_id: int) -> None:
         """Confirm and save a reminder."""
@@ -213,63 +382,22 @@ class ReminderBot:
         )
 
     async def _process_reminder_text(self, text: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Extract reminder details from text using simple parsing."""
+        """Process reminder text and extract details."""
         try:
             logger.info(f"Processing text: {text}")
             
-            # Improved text pattern matching
-            text = text.replace('یادآوری که که', 'یادآوری کن').replace('یادآوری که', 'یادآوری کن')
-            logger.info(f"Normalized text: {text}")
+            # Extract reminder details
+            details = self.parser.extract_reminder_details(text)
+            if not details:
+                raise Exception("Failed to extract reminder details")
             
-            # Time pattern with more flexible matching
-            time_pattern = r'ساعت\s+(\d{1,2})(?::(\d{2}))?\s*(بعد از ظهر|صبح|عصر|شب)?'
-            date_pattern = r'(فردا|پس‌فردا|امروز|(\d{1,2})\s+(فروردین|اردیبهشت|خرداد|تیر|مرداد|شهریور|مهر|آبان|آذر|دی|بهمن|اسفند)\s+(\d{4}))'
+            time_info = details["time_info"]
+            date_info = details["date_info"]
+            task = details["task"]
             
-            time_match = re.search(time_pattern, text)
-            date_match = re.search(date_pattern, text)
-            
-            if time_match:
-                # Extract time
-                hour = int(time_match.group(1))
-                minute = int(time_match.group(2)) if time_match.group(2) else 0
-                period = time_match.group(3)
-                
-                # Convert to 24-hour format
-                if period in ['بعد از ظهر', 'عصر', 'شب'] and hour < 12:
-                    hour += 12
-                elif period == 'صبح' and hour == 12:
-                    hour = 0
-                
-                # Extract date
-                if date_match:
-                    if date_match.group(1) == 'فردا':
-                        date = datetime.datetime.now(TEHRAN_TZ) + datetime.timedelta(days=1)
-                    elif date_match.group(1) == 'پس‌فردا':
-                        date = datetime.datetime.now(TEHRAN_TZ) + datetime.timedelta(days=2)
-                    elif date_match.group(1) == 'امروز':
-                        date = datetime.datetime.now(TEHRAN_TZ)
-                    else:
-                        # Parse Persian date
-                        day = int(date_match.group(2))
-                        month = self._get_month_number(date_match.group(3))
-                        year = int(date_match.group(4))
-                        date = datetime.datetime(year, month, day, tzinfo=TEHRAN_TZ)
-                else:
-                    # Default to today if no date specified
-                    date = datetime.datetime.now(TEHRAN_TZ)
-                
+            if time_info and date_info:
                 # Combine date and time
-                reminder_time = date.replace(hour=hour, minute=minute)
-                
-                # Extract task
-                task = text
-                if 'یادآوری کن' in task:
-                    task = task.split('یادآوری کن')[1].strip()
-                if time_match:
-                    task = task.replace(time_match.group(0), '').strip()
-                if date_match:
-                    task = task.replace(date_match.group(0), '').strip()
-                task = task.replace('که', '').strip()
+                reminder_time = date_info.replace(hour=time_info["hour"], minute=time_info["minute"])
                 
                 # Generate a unique ID for this reminder
                 reminder_id = int(time.time())
@@ -278,7 +406,7 @@ class ReminderBot:
                 context.user_data[f"pending_reminder_{reminder_id}"] = {
                     "text": task,
                     "scheduled_time": reminder_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "frequency": "once"  # Default frequency
+                    "frequency": "once"
                 }
                 
                 # Create confirmation buttons
@@ -300,25 +428,15 @@ class ReminderBot:
             else:
                 await update.message.reply_text(
                     "متأسفانه نتوانستم زمان یادآور را تشخیص دهم. لطفاً به صورت واضح‌تر زمان را مشخص کنید.\n"
-                    "مثال: یادآوری کن فردا ساعت ۳ بعد از ظهر به مادرم زنگ بزنم"
+                    "مثال: یادآوری کن فردا ساعت ۳ به مادرم زنگ بزنم"
                 )
                 
         except Exception as e:
             logger.error(f"Error processing reminder text: {e}", exc_info=True)
             await update.message.reply_text(
                 "متأسفانه نتوانستم یادآور شما را درک کنم. لطفاً به صورت واضح‌تر بنویسید.\n"
-                "مثال: یادآوری کن فردا ساعت ۳ بعد از ظهر به مادرم زنگ بزنم"
+                "مثال: یادآوری کن فردا ساعت ۳ به مادرم زنگ بزنم"
             )
-
-    def _get_month_number(self, month_name: str) -> int:
-        """Convert Persian month name to number."""
-        months = {
-            'فروردین': 1, 'اردیبهشت': 2, 'خرداد': 3,
-            'تیر': 4, 'مرداد': 5, 'شهریور': 6,
-            'مهر': 7, 'آبان': 8, 'آذر': 9,
-            'دی': 10, 'بهمن': 11, 'اسفند': 12
-        }
-        return months.get(month_name, 1)
 
     def _persian_format_datetime(self, dt: datetime.datetime) -> str:
         """Format datetime in Persian style."""
@@ -512,15 +630,31 @@ class ReminderBot:
                 )
             
             # Run the async function
-            import asyncio
             asyncio.run(send())
             
         except Exception as e:
             logger.error(f"Error sending reminder: {e}")
 
+    async def cleanup_old_files(self):
+        """Clean up old temporary files."""
+        current_time = time.time()
+        if current_time - self.last_cleanup >= self.cleanup_interval:
+            try:
+                for filename in os.listdir(self.temp_dir):
+                    file_path = os.path.join(self.temp_dir, filename)
+                    if os.path.getctime(file_path) < current_time - self.cleanup_interval:
+                        os.remove(file_path)
+                self.last_cleanup = current_time
+            except Exception as e:
+                logger.error(f"Error during cleanup: {e}")
+
     def run(self) -> None:
-        """Start the bot."""
-        self.application.run_polling()
+        """Start the bot with proper cleanup."""
+        try:
+            self.application.run_polling()
+        finally:
+            # Cleanup on shutdown
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
