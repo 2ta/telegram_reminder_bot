@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from faster_whisper import WhisperModel
 import asyncio
 import shutil
+from ai_processor import AIProcessor
 
 # Load environment variables
 load_dotenv()
@@ -118,6 +119,9 @@ class ReminderBot:
         self.max_concurrent = int(os.getenv('MAX_CONCURRENT_TRANSCRIPTIONS', '1'))
         self.cleanup_interval = int(os.getenv('CLEANUP_INTERVAL', '300'))
         
+        # Initialize AI processor
+        self.ai_processor = AIProcessor()
+        
         # Initialize voice recognition model
         self.model = WhisperModel(
             self.model_size,
@@ -206,7 +210,7 @@ class ReminderBot:
         await update.message.reply_text(help_text)
 
     async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle voice messages with memory management."""
+        """Handle voice messages with Google Cloud Speech-to-Text."""
         if self.processing_count >= self.max_concurrent:
             await update.message.reply_text(
                 "سیستم در حال حاضر مشغول است. لطفاً چند لحظه دیگر تلاش کنید."
@@ -218,38 +222,33 @@ class ReminderBot:
             voice = update.message.voice
             voice_file = await context.bot.get_file(voice.file_id)
             
-            # Save to temp file with OGG extension
-            ogg_path = os.path.join(self.temp_dir, f"{voice.file_id}.ogg")
+            # Save to temp file
+            voice_path = os.path.join(self.temp_dir, f"{voice.file_id}.ogg")
             wav_path = os.path.join(self.temp_dir, f"{voice.file_id}.wav")
             
-            # Download the voice file
-            await voice_file.download_to_drive(ogg_path)
+            await voice_file.download_to_drive(voice_path)
             
-            # Convert OGG to WAV using ffmpeg
-            os.system(f"ffmpeg -i {ogg_path} -ar 16000 -ac 1 -c:a pcm_s16le {wav_path}")
+            # Convert to WAV format
+            os.system(f'ffmpeg -i {voice_path} -ar 16000 -ac 1 -c:a pcm_s16le {wav_path}')
             
-            # Transcribe with optimized parameters
-            segments, info = self.model.transcribe(
-                wav_path,
-                language="fa",
-                beam_size=1,
-                vad_filter=True
-            )
+            # Process with Google Cloud Speech-to-Text
+            text = await self.ai_processor.process_voice(wav_path)
             
-            text = " ".join([segment.text for segment in segments])
-            
-            # Clean up the files immediately after use
-            try:
-                os.remove(ogg_path)
-                os.remove(wav_path)
-            except Exception as e:
-                logger.error(f"Error cleaning up voice files: {e}")
-            
-            # Process the transcribed text
-            await self._process_reminder_text(text, update, context)
-            
-            # Send confirmation of transcription
-            await update.message.reply_text(f"متن تشخیص داده شده:\n{text}")
+            if text:
+                # Analyze the text
+                analysis = await self.ai_processor.analyze_text(text)
+                
+                # Process as reminder
+                await self._process_reminder_text(text, update, context)
+                
+                # Show transcription to user
+                await update.message.reply_text(
+                    f"📝 متن تشخیص داده شده:\n{text}"
+                )
+            else:
+                await update.message.reply_text(
+                    "متأسفانه نتوانستم پیام صوتی را تشخیص دهم. لطفاً دوباره تلاش کنید."
+                )
             
         except Exception as e:
             logger.error(f"Error processing voice message: {e}")
@@ -258,12 +257,41 @@ class ReminderBot:
             )
         finally:
             self.processing_count -= 1
+            # Clean up temporary files
+            if os.path.exists(voice_path):
+                os.remove(voice_path)
+            if os.path.exists(wav_path):
+                os.remove(wav_path)
             await self.cleanup_old_files()
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Process text messages and extract reminder details."""
+        """Process text messages with AI analysis."""
         text = update.message.text
-        await self._process_reminder_text(text, update, context)
+        
+        try:
+            # Detect language
+            language = await self.ai_processor.detect_language(text)
+            
+            # Translate if not in Persian
+            if language and language != 'fa':
+                translated_text = await self.ai_processor.translate_text(text)
+                if translated_text:
+                    text = translated_text
+                    await update.message.reply_text(
+                        f"🔄 ترجمه متن شما:\n{translated_text}"
+                    )
+            
+            # Analyze text
+            analysis = await self.ai_processor.analyze_text(text)
+            
+            # Process as reminder
+            await self._process_reminder_text(text, update, context)
+            
+        except Exception as e:
+            logger.error(f"Error processing text message: {e}")
+            await update.message.reply_text(
+                "متأسفانه در پردازش پیام متنی مشکلی پیش آمد. لطفاً دوباره تلاش کنید."
+            )
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle button presses."""
